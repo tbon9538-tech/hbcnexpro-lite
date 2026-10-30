@@ -154,12 +154,11 @@ async function act() {
   try {
     const changed = await commit(token, url);
     store.set(TOKEN_KEY, token);
-    if (!changed) {
-      show('ok', '仓库里已经是这个网址，无需修改');
-      await loadCurrent();
-      return;
-    }
-    show('ok', '已保存到 GitHub，正在发布（通常 1～2 分钟）…');
+    // 仓库里已是这个值但 Pages 可能还在发布上一次保存，要看 App 实际读到的值
+    if (!changed && (await loadCurrent()) === url) return show('ok', '已经是这个网址，无需修改');
+    show('ok', changed
+      ? '已保存到 GitHub，正在发布（通常 1～2 分钟）…'
+      : '这个网址之前已保存，GitHub Pages 还在发布，请稍候…');
     show('ok', (await waitPublished(url))
       ? '已生效，用户下次打开 App 即加载新网址'
       : '已保存，发布较慢，请几分钟后刷新本页确认');
