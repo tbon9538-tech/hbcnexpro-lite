@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hudson Bay — App URL 管理</title>
+<style>
+  :root { --bg: #0b1f3a; --card: #122c52; --line: rgba(255,255,255,.08); --muted: #93a1b5; --accent: #d8b45e; --ok: #3dd39a; --err: #ff7a7e; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: #fff; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .box { width: 100%; max-width: 420px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 28px 24px; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  .sub { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 6px; }
+  input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: #fff; font-size: 14px; outline: none; }
+  input:focus { border-color: var(--accent); }
+  button { width: 100%; margin-top: 18px; padding: 13px; border: none; border-radius: 10px; background: var(--accent); color: #0b1d38; font-size: 15px; font-weight: 700; cursor: pointer; }
+  button:active { transform: scale(.98); }
+  .msg { margin-top: 14px; font-size: 13px; min-height: 18px; }
+  .msg.ok { color: var(--ok); }
+  .msg.err { color: var(--err); }
+  .cur { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); word-break: break-all; }
+  .cur b { color: #fff; font-size: 13px; display: block; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>App URL 管理</h1>
+    <div class="sub">修改 App 内加载的网址（app.web_url 配置）</div>
+
+    <div v-if="0"></div>
+    <label>管理密码</label>
+    <input type="password" id="pw" placeholder="输入管理密码" autocomplete="current-password">
+    <label>当前网址</label>
+    <input type="text" id="url" placeholder="https://…">
+    <button id="btn" onclick="act()">保存</button>
+    <div class="msg" id="msg"></div>
+    <div class="cur">当前生效的网址（App 启动时读取）：<b id="cur">加载中…</b></div>
+  </div>
+
+<script>
+const API = 'https://www.hbcnexpro.com/api/v1';
+const KEY = 'app.web_url';
+const $ = (id) => document.getElementById(id);
+const pw = sessionStorage.getItem('adminPw') || '';
+
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json', 'x-admin-token': pw },
+    ...opts,
+  });
+  return r;
+}
+
+async function loadCurrent() {
+  try {
+    const r = await fetch(API + '/config/public');
+    const j = await r.json();
+    $('cur').textContent = (j.data.configs && j.data.configs[KEY]) || '（尚未设置）';
+  } catch { $('cur').textContent = '（读取失败）'; }
+}
+
+async function act() {
+  const pass = $('pw').value;
+  const url = $('url').value.trim();
+  const msg = $('msg');
+  msg.className = 'msg';
+  msg.textContent = '';
+  if (!pass) { msg.classList.add('err'); msg.textContent = '请输入密码'; return; }
+  if (!/^https?:\/\/.+/.test(url)) { msg.classList.add('err'); msg.textContent = '请输入完整网址（以 http/https 开头）'; return; }
+  try {
+    const r = await api('/admin/app-config', { method: 'POST', body: JSON.stringify({ key: KEY, value: url }) });
+    if (r.status === 401) { msg.classList.add('err'); msg.textContent = '密码错误'; return; }
+    if (!r.ok) throw new Error((await r.json()).message || r.status);
+    sessionStorage.setItem('adminPw', pass);
+    msg.classList.add('ok');
+    msg.textContent = '已保存，用户下次打开 App 即生效';
+    await loadCurrent();
+  } catch (e) {
+    msg.classList.add('err');
+    msg.textContent = '保存失败：' + e.message;
+  }
+}
+$('pw').value = pw;
+$('pw').onkeydown = (e) => e.key === 'Enter' && act();
+$('url').onkeydown = (e) => e.key === 'Enter' && act();
+loadCurrent();
+</script>
+</body>
+</html>
