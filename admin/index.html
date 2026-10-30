@@ -14,10 +14,14 @@
   label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 6px; }
   input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: #fff; font-size: 14px; outline: none; }
   input:focus { border-color: var(--accent); }
+  .hint { margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .hint a { color: var(--accent); text-decoration: none; }
+  .presets { display: flex; gap: 8px; margin-top: 8px; }
   button { width: 100%; margin-top: 18px; padding: 13px; border: none; border-radius: 10px; background: var(--accent); color: #0b1d38; font-size: 15px; font-weight: 700; cursor: pointer; }
   button:active { transform: scale(.98); }
   button:disabled { opacity: .6; cursor: default; }
-  .msg { margin-top: 14px; font-size: 13px; min-height: 18px; }
+  .presets button { flex: 1; margin-top: 0; padding: 8px; font-size: 12px; font-weight: 600; background: rgba(255,255,255,.08); color: #fff; }
+  .msg { margin-top: 14px; font-size: 13px; min-height: 18px; line-height: 1.5; }
   .msg.ok { color: var(--ok); }
   .msg.err { color: var(--err); }
   .cur { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); word-break: break-all; }
@@ -27,44 +31,74 @@
 <body>
   <div class="box">
     <h1>App URL 管理</h1>
-    <div class="sub">修改 App 内加载的网址（app.web_url 配置）</div>
+    <div class="sub">修改 App 内加载的网址（保存到 GitHub 仓库的 app-config.json）</div>
 
-    <label>管理密码</label>
-    <input type="password" id="pw" placeholder="输入管理密码" autocomplete="current-password">
-    <label>当前网址</label>
+    <label>GitHub 令牌</label>
+    <input type="password" id="tk" placeholder="github_pat_…" autocomplete="off">
+    <div class="hint">
+      细粒度令牌，只授权 hbcnexpro-lite 仓库、Contents 读写权限。
+      <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">创建令牌</a><br>
+      保存成功后令牌会记在本浏览器里，不会上传到别处。<a href="#" id="forget">清除</a>
+    </div>
+    <label>App 加载的网址</label>
     <input type="text" id="url" placeholder="https://…">
+    <div class="presets">
+      <button type="button" data-url="https://tbon9538-tech.github.io/hbcnexpro-lite/">审核站（行情+资讯）</button>
+      <button type="button" data-url="https://www.hbcnexpro.com">主站</button>
+    </div>
     <button id="btn" type="button">保存</button>
     <div class="msg" id="msg"></div>
     <div class="cur">当前生效的网址（App 启动时读取）：<b id="cur">加载中…</b></div>
   </div>
 
 <script>
-const API = 'https://www.hbcnexpro.com/api/v1';
-const KEY = 'app.web_url';
+// 配置存在本仓库的 app-config.json，GitHub Pages 发布后 App 从同一个文件读取
+const REPO = 'tbon9538-tech/hbcnexpro-lite';
+const BRANCH = 'main';
+const FILE = 'app-config.json';
+const CONTENTS_API = `https://api.github.com/repos/${REPO}/contents/${FILE}`;
+const PUBLISHED = new URL('../' + FILE, location.href).href;
+const TOKEN_KEY = 'ghToken';
 const $ = (id) => document.getElementById(id);
 
 // 不能用 storage 抛异常（无痕模式等）拖垮整个页面
 const store = {
-  get: (k) => { try { return sessionStorage.getItem(k) || ''; } catch { return ''; } },
-  set: (k, v) => { try { sessionStorage.setItem(k, v); } catch {} },
-  del: (k) => { try { sessionStorage.removeItem(k); } catch {} },
+  get: (k) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 
-// token 每次从输入框现取，不能用页面加载时读到的旧值
-async function api(path, token, opts = {}) {
-  return fetch(API + path, {
+const toB64 = (s) => btoa(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join(''));
+const fromB64 = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\s/g, '')), (c) => c.charCodeAt(0)));
+
+function gh(token, opts = {}) {
+  return fetch(CONTENTS_API + (opts.method ? '' : `?ref=${BRANCH}`), {
     ...opts,
-    headers: { 'Content-Type': 'application/json', 'x-admin-token': token, ...opts.headers },
+    cache: 'no-store',
+    headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
   });
+}
+
+async function ghError(r) {
+  if (r.status === 401) return '令牌无效或已过期';
+  if (r.status === 403 || r.status === 404) return `令牌没有 ${REPO} 仓库的 Contents 读写权限`;
+  const j = await r.json().catch(() => null);
+  return (j && j.message) || 'HTTP ' + r.status;
+}
+
+/** App 实际读到的值：GitHub Pages 上已发布的文件 */
+async function readPublished() {
+  const r = await fetch(PUBLISHED, { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return (await r.json()).web_url || '';
 }
 
 async function loadCurrent() {
   try {
-    const r = await fetch(API + '/config/public', { cache: 'no-store' });
-    const j = await r.json();
-    const cur = j.data && j.data.configs && j.data.configs[KEY];
+    const cur = await readPublished();
     $('cur').textContent = cur || '（尚未设置）';
     if (cur && !$('url').value) $('url').value = cur;
+    return cur;
   } catch { $('cur').textContent = '（读取失败）'; }
 }
 
@@ -78,26 +112,57 @@ function isHttpUrl(s) {
   try { const u = new URL(s); return (u.protocol === 'https:' || u.protocol === 'http:') && !!u.hostname; } catch { return false; }
 }
 
+/** 读仓库里的当前文件（拿 sha）再提交新内容；sha 冲突时重读一次 */
+async function commit(token, url) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const g = await gh(token);
+    if (!g.ok && g.status !== 404) throw new Error(await ghError(g));
+    const file = g.ok ? await g.json() : null;
+    let current = '';
+    try { current = file ? JSON.parse(fromB64(file.content)).web_url : ''; } catch {} // 文件被手改坏时直接覆盖
+    if (current === url) return false;
+    const body = JSON.stringify({ web_url: url }, null, 2) + '\n';
+    const p = await gh(token, {
+      method: 'PUT',
+      body: JSON.stringify({ message: `Set app web_url to ${url}`, content: toB64(body), branch: BRANCH, ...(file && { sha: file.sha }) }),
+    });
+    if (p.ok) return true;
+    if (p.status !== 409 && p.status !== 422) throw new Error(await ghError(p));
+  }
+  throw new Error('文件被同时修改，请重试');
+}
+
+// 提交后 GitHub Pages 需要重新发布，轮询到 App 能读到新值为止
+async function waitPublished(url) {
+  for (let i = 0; i < 24; i++) {
+    await new Promise((r) => setTimeout(r, 10000));
+    if ((await loadCurrent()) === url) return true;
+  }
+  return false;
+}
+
 let saving = false;
 async function act() {
   if (saving) return;
-  const pass = $('pw').value;
+  const token = $('tk').value.trim();
   const url = $('url').value.trim();
   show('', '');
-  if (!pass) return show('err', '请输入密码');
+  if (!token) return show('err', '请输入 GitHub 令牌');
   if (!isHttpUrl(url)) return show('err', '请输入完整网址（以 http/https 开头）');
   saving = true;
   $('btn').disabled = true;
   try {
-    const r = await api('/admin/app-config', pass, { method: 'POST', body: JSON.stringify({ key: KEY, value: url }) });
-    if (r.status === 401 || r.status === 403) { store.del('adminPw'); return show('err', '密码错误'); }
-    if (!r.ok) {
-      const j = await r.json().catch(() => null);
-      throw new Error((j && j.message) || 'HTTP ' + r.status);
+    const changed = await commit(token, url);
+    store.set(TOKEN_KEY, token);
+    if (!changed) {
+      show('ok', '仓库里已经是这个网址，无需修改');
+      await loadCurrent();
+      return;
     }
-    store.set('adminPw', pass);
-    show('ok', '已保存，用户下次打开 App 即生效');
-    await loadCurrent();
+    show('ok', '已保存到 GitHub，正在发布（通常 1～2 分钟）…');
+    show('ok', (await waitPublished(url))
+      ? '已生效，用户下次打开 App 即加载新网址'
+      : '已保存，发布较慢，请几分钟后刷新本页确认');
   } catch (e) {
     show('err', '保存失败：' + e.message);
   } finally {
@@ -106,16 +171,21 @@ async function act() {
   }
 }
 
-// 注意：on* 事件属性的处理器返回 false 等同于 preventDefault()。
-// 旧写法 (e) => e.key === 'Enter' && act() 对除回车外的每个键都返回 false，
-// 于是所有按键的默认行为（输入字符）都被取消了。这里用 addEventListener（忽略返回值）。
+// on* 事件属性的处理器返回 false 等同于 preventDefault()，会吞掉按键，所以用 addEventListener
 function onEnter(e) {
   if (e.key === 'Enter' && !e.isComposing) act();
 }
-$('pw').addEventListener('keydown', onEnter);
+$('tk').addEventListener('keydown', onEnter);
 $('url').addEventListener('keydown', onEnter);
 $('btn').addEventListener('click', act);
-$('pw').value = store.get('adminPw');
+document.querySelectorAll('.presets button').forEach((b) => b.addEventListener('click', () => { $('url').value = b.dataset.url; }));
+$('forget').addEventListener('click', (e) => {
+  e.preventDefault();
+  store.del(TOKEN_KEY);
+  $('tk').value = '';
+  show('ok', '已清除本浏览器保存的令牌');
+});
+$('tk').value = store.get(TOKEN_KEY);
 loadCurrent();
 </script>
 </body>
