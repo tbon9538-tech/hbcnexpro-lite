@@ -16,6 +16,7 @@
   input:focus { border-color: var(--accent); }
   button { width: 100%; margin-top: 18px; padding: 13px; border: none; border-radius: 10px; background: var(--accent); color: #0b1d38; font-size: 15px; font-weight: 700; cursor: pointer; }
   button:active { transform: scale(.98); }
+  button:disabled { opacity: .6; cursor: default; }
   .msg { margin-top: 14px; font-size: 13px; min-height: 18px; }
   .msg.ok { color: var(--ok); }
   .msg.err { color: var(--err); }
@@ -28,12 +29,11 @@
     <h1>App URL 管理</h1>
     <div class="sub">修改 App 内加载的网址（app.web_url 配置）</div>
 
-    <div v-if="0"></div>
     <label>管理密码</label>
     <input type="password" id="pw" placeholder="输入管理密码" autocomplete="current-password">
     <label>当前网址</label>
     <input type="text" id="url" placeholder="https://…">
-    <button id="btn" onclick="act()">保存</button>
+    <button id="btn" type="button">保存</button>
     <div class="msg" id="msg"></div>
     <div class="cur">当前生效的网址（App 启动时读取）：<b id="cur">加载中…</b></div>
   </div>
@@ -42,48 +42,80 @@
 const API = 'https://www.hbcnexpro.com/api/v1';
 const KEY = 'app.web_url';
 const $ = (id) => document.getElementById(id);
-const pw = sessionStorage.getItem('adminPw') || '';
 
-async function api(path, opts = {}) {
-  const r = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json', 'x-admin-token': pw },
+// 不能用 storage 抛异常（无痕模式等）拖垮整个页面
+const store = {
+  get: (k) => { try { return sessionStorage.getItem(k) || ''; } catch { return ''; } },
+  set: (k, v) => { try { sessionStorage.setItem(k, v); } catch {} },
+  del: (k) => { try { sessionStorage.removeItem(k); } catch {} },
+};
+
+// token 每次从输入框现取，不能用页面加载时读到的旧值
+async function api(path, token, opts = {}) {
+  return fetch(API + path, {
     ...opts,
+    headers: { 'Content-Type': 'application/json', 'x-admin-token': token, ...opts.headers },
   });
-  return r;
 }
 
 async function loadCurrent() {
   try {
-    const r = await fetch(API + '/config/public');
+    const r = await fetch(API + '/config/public', { cache: 'no-store' });
     const j = await r.json();
-    $('cur').textContent = (j.data.configs && j.data.configs[KEY]) || '（尚未设置）';
+    const cur = j.data && j.data.configs && j.data.configs[KEY];
+    $('cur').textContent = cur || '（尚未设置）';
+    if (cur && !$('url').value) $('url').value = cur;
   } catch { $('cur').textContent = '（读取失败）'; }
 }
 
+function show(kind, text) {
+  const msg = $('msg');
+  msg.className = 'msg ' + kind;
+  msg.textContent = text;
+}
+
+function isHttpUrl(s) {
+  try { const u = new URL(s); return (u.protocol === 'https:' || u.protocol === 'http:') && !!u.hostname; } catch { return false; }
+}
+
+let saving = false;
 async function act() {
+  if (saving) return;
   const pass = $('pw').value;
   const url = $('url').value.trim();
-  const msg = $('msg');
-  msg.className = 'msg';
-  msg.textContent = '';
-  if (!pass) { msg.classList.add('err'); msg.textContent = '请输入密码'; return; }
-  if (!/^https?:\/\/.+/.test(url)) { msg.classList.add('err'); msg.textContent = '请输入完整网址（以 http/https 开头）'; return; }
+  show('', '');
+  if (!pass) return show('err', '请输入密码');
+  if (!isHttpUrl(url)) return show('err', '请输入完整网址（以 http/https 开头）');
+  saving = true;
+  $('btn').disabled = true;
   try {
-    const r = await api('/admin/app-config', { method: 'POST', body: JSON.stringify({ key: KEY, value: url }) });
-    if (r.status === 401 || r.status === 403) { msg.classList.add('err'); msg.textContent = '密码错误'; return; }
-    if (!r.ok) throw new Error((await r.json()).message || r.status);
-    sessionStorage.setItem('adminPw', pass);
-    msg.classList.add('ok');
-    msg.textContent = '已保存，用户下次打开 App 即生效';
+    const r = await api('/admin/app-config', pass, { method: 'POST', body: JSON.stringify({ key: KEY, value: url }) });
+    if (r.status === 401 || r.status === 403) { store.del('adminPw'); return show('err', '密码错误'); }
+    if (!r.ok) {
+      const j = await r.json().catch(() => null);
+      throw new Error((j && j.message) || 'HTTP ' + r.status);
+    }
+    store.set('adminPw', pass);
+    show('ok', '已保存，用户下次打开 App 即生效');
     await loadCurrent();
   } catch (e) {
-    msg.classList.add('err');
-    msg.textContent = '保存失败：' + e.message;
+    show('err', '保存失败：' + e.message);
+  } finally {
+    saving = false;
+    $('btn').disabled = false;
   }
 }
-$('pw').value = pw;
-$('pw').onkeydown = (e) => e.key === 'Enter' && act();
-$('url').onkeydown = (e) => e.key === 'Enter' && act();
+
+// 注意：on* 事件属性的处理器返回 false 等同于 preventDefault()。
+// 旧写法 (e) => e.key === 'Enter' && act() 对除回车外的每个键都返回 false，
+// 于是所有按键的默认行为（输入字符）都被取消了。这里用 addEventListener（忽略返回值）。
+function onEnter(e) {
+  if (e.key === 'Enter' && !e.isComposing) act();
+}
+$('pw').addEventListener('keydown', onEnter);
+$('url').addEventListener('keydown', onEnter);
+$('btn').addEventListener('click', act);
+$('pw').value = store.get('adminPw');
 loadCurrent();
 </script>
 </body>
